@@ -12,7 +12,7 @@
 
 #define BUFSIZE 104857600
 
-ssize_t mmap_read(char infd, int outfd, off_t offset, ssize_t size)
+ssize_t mmap_read(int infd, int outfd, off_t offset, ssize_t size)
 {
 	caddr_t		addr;
 	ssize_t		read_size = 0, req_size = size;
