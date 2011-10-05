@@ -109,8 +109,8 @@ int main (int argc, char *argv[])
 	end_time = time(NULL);
 
 	if (!err) {
-		printf("Time taken : %lu\n", end_time - start_time);
-		printf("Data Read : %lu\n", fileStat.st_size);
+		printf("Time taken : %lu sec\n", end_time - start_time);
+		printf("Data Read : %lu bytes\n", fileStat.st_size);
 		printf("Speed is : %f MB/sec\n", fileStat.st_size * 1.0 / 
 				(1024 * 1024) / (end_time - start_time));
 	}
