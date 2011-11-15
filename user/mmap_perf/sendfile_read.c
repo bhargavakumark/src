@@ -9,17 +9,32 @@
 #include <sys/stat.h>
 #include <sys/user.h>
 #include <sys/param.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+
+/***********************************************************
+ *
+ * To use this program you would need a TTCP or similar program
+ * which provides a socket to which we can connect to and discards
+ * the data that we send
+ *
+ * If using ttcp then, run TTCP as 
+ * ./ttcp -p 2000 -r
+ * 
+ ************************************************************/
 
 #define BUFSIZE 104857600
 
-ssize_t normal_read(char infd, int outfd, off_t offset, ssize_t size)
+ssize_t sendfile_read(char infd, int outfd, off_t offset, ssize_t size)
 {
 	ssize_t		read_size = 0, req_size = size, req_read_size;
 	static char	buf[BUFSIZE];
 
 	while (req_size > 0) {
 		req_read_size = MIN(BUFSIZE, req_size);
-		read_size = read(infd, buf, req_read_size);
+		read_size = sendfile(outfd, infd, 0, req_read_size);
 		if (read_size < 0) {
 			fprintf(stderr, "read error for fd %d : %s\n", infd,
 							strerror(errno));
@@ -47,6 +62,9 @@ int main (int argc, char *argv[])
 	int		infd, outfd, err, opt;
 	ssize_t		read_size;
 	time_t		start_time, end_time;
+	in_addr_t	saddr;
+
+	struct sockaddr_in	sin1;
 	
 	while ((opt = getopt(argc, argv,"i:o:" )) != EOF) {
 		switch (opt) {
@@ -80,10 +98,22 @@ int main (int argc, char *argv[])
 		fprintf(stderr, "not a regular file %s\n", filename);
 		exit(1);
 	}
-
+#if 0
 	outfd = open("/dev/null", O_WRONLY|O_CREAT|O_TRUNC);
 	if (outfd < 0) {
 		fprintf(stderr, "open error for /dev/null %s\n", 
+							strerror(errno));
+		exit(1);
+	}
+#endif
+	outfd = socket(AF_INET, SOCK_STREAM, 0);
+	if (outfd < 0) {
+		fprintf(stderr, "open error for socket() %s\n", 
+							strerror(errno));
+		exit(1);
+	}
+	if (!inet_pton(AF_INET, "127.0.0.1", &saddr)) {
+		fprintf(stderr, "IP address 127.0.0.1 is not valid %s\n",
 							strerror(errno));
 		exit(1);
 	}
@@ -95,8 +125,18 @@ int main (int argc, char *argv[])
 		exit(1);
 	}
 	
+	memset(&sin1, 0, sizeof(sin1));
+	sin1.sin_family      = AF_INET;
+	sin1.sin_addr.s_addr = saddr;
+	sin1.sin_port        = htons(2000);
+
+	if (connect(outfd, (struct sockaddr *)&sin1, sizeof(sin1)) < 0) {
+		fprintf(stderr, "connect error: %s\n", strerror(errno));
+		exit(1);
+	}
+
 	start_time = time(NULL);
-	read_size = normal_read(infd, outfd, 0, fileStat.st_size);
+	read_size = sendfile_read(infd, outfd, 0, fileStat.st_size);
 	end_time = time(NULL);
 
 	if (!err) {

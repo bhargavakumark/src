@@ -46,7 +46,7 @@ ssize_t mmap_read(int infd, int outfd, off_t offset, ssize_t size)
 
 void usage(char *argv[])
 {
-	fprintf(stderr, "Usage : %s -f <input-file>\n", argv[0]);
+	fprintf(stderr, "Usage : %s -i <input-file>\n", argv[0]);
 }
 
 int main (int argc, char *argv[])
