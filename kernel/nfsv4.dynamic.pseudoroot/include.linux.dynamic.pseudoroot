@@ -1,0 +1,45 @@
+diff -ru nfsd/export.h nfsd.new/export.h
+--- nfsd/export.h	2012-09-04 22:31:59.000000000 +0530
++++ nfsd.new/export.h	2012-09-04 22:34:47.000000000 +0530
+@@ -39,7 +39,17 @@
+ #define NFSEXP_FSID		0x2000
+ #define	NFSEXP_CROSSMOUNT	0x4000
+ #define	NFSEXP_NOACL		0x8000	/* reserved for possible ACL related use */
+-#define NFSEXP_ALLFLAGS		0xFE3F
++/*
+++ * The NFSEXP_V4ROOT flag causes the kernel to give access only to NFSv4
+++ * clients, and only to the single directory that is the root of the
+++ * export; further lookup and readdir operations are treated as if every
+++ * subdirectory was a mountpoint, and ignored if they are not themselves
+++ * exported.  This is used by nfsd and mountd to construct the NFSv4
+++ * pseudofilesystem, which provides access only to paths leading to each
+++ * exported filesystem.
+++ */
++#define	NFSEXP_V4ROOT		0x10000
++#define NFSEXP_ALLFLAGS		0x1FE3F
+ 
+ /* The flags that may vary depending on security flavor: */
+ #define NFSEXP_SECINFO_FLAGS	(NFSEXP_READONLY | NFSEXP_ROOTSQUASH \
+diff -ru nfsd/nfsd.h nfsd.new/nfsd.h
+--- nfsd/nfsd.h	2012-09-04 22:31:59.000000000 +0530
++++ nfsd.new/nfsd.h	2012-09-05 00:15:33.000000000 +0530
+@@ -86,6 +86,7 @@
+ 				struct svc_export **, struct dentry **);
+ __be32		nfsd_setattr(struct svc_rqst *, struct svc_fh *,
+ 				struct iattr *, int, time_t);
++int nfsd_mountpoint(struct dentry *, struct svc_export *);
+ #ifdef CONFIG_NFSD_V4
+ __be32          nfsd4_set_nfs4_acl(struct svc_rqst *, struct svc_fh *,
+                     struct nfs4_acl *);
+@@ -159,6 +160,11 @@
+ 
+ extern int nfsd_max_blksize;
+ 
++static inline int nfsd_v4client(struct svc_rqst *rq)
++{
++	return rq->rq_prog == NFS_PROGRAM && rq->rq_vers == 4;
++}
++
+ /* 
+  * NFSv4 State
+  */

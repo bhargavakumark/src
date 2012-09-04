@@ -1,0 +1,11 @@
+--- nfs-utils-1.2.3/utils/mountd/v4root.c	2012-04-18 15:03:21.000000000 +0530
++++ nfs-utils-1.2.3.new/utils/mountd/v4root.c	2012-09-05 00:26:02.000000000 +0530
+@@ -105,6 +105,8 @@
+ 	static int warned = 0;
+ 
+ 	ef = get_export_features();
++	xlog(L_WARNING, "Forcefully enabling dynamic pseudo root support.");
++	return 1;
+ 
+ 	if (ef->flags & NFSEXP_V4ROOT)
+ 		return 1;
