@@ -1,6 +1,18 @@
 --- nfs-utils-1.2.3/utils/mountd/v4root.c	2012-04-18 15:03:21.000000000 +0530
-+++ nfs-utils-1.2.3.new/utils/mountd/v4root.c	2012-09-05 00:26:02.000000000 +0530
-@@ -105,6 +105,8 @@
++++ nfs-utils-1.2.3.new/utils/mountd/v4root.c	2012-09-05 13:18:31.000000000 +0530
+@@ -35,9 +35,8 @@
+ 	.m_export = {
+ 		.e_hostname = "*",
+ 		.e_path = "/",
+-		.e_flags = NFSEXP_READONLY | NFSEXP_ROOTSQUASH
+-				| NFSEXP_NOSUBTREECHECK | NFSEXP_FSID
+-				| NFSEXP_V4ROOT,
++		.e_flags = NFSEXP_READONLY | NFSEXP_NOSUBTREECHECK
++				| NFSEXP_FSID | NFSEXP_V4ROOT,
+ 		.e_anonuid = 65534,
+ 		.e_anongid = 65534,
+ 		.e_squids = NULL,
+@@ -105,6 +104,8 @@
  	static int warned = 0;
  
  	ef = get_export_features();
