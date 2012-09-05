@@ -1,18 +1,22 @@
 --- nfs-utils-1.2.3/utils/mountd/v4root.c	2012-04-18 15:03:21.000000000 +0530
-+++ nfs-utils-1.2.3.new/utils/mountd/v4root.c	2012-09-05 13:18:31.000000000 +0530
-@@ -35,9 +35,8 @@
- 	.m_export = {
- 		.e_hostname = "*",
- 		.e_path = "/",
--		.e_flags = NFSEXP_READONLY | NFSEXP_ROOTSQUASH
--				| NFSEXP_NOSUBTREECHECK | NFSEXP_FSID
--				| NFSEXP_V4ROOT,
-+		.e_flags = NFSEXP_READONLY | NFSEXP_NOSUBTREECHECK
-+				| NFSEXP_FSID | NFSEXP_V4ROOT,
- 		.e_anonuid = 65534,
- 		.e_anongid = 65534,
- 		.e_squids = NULL,
-@@ -105,6 +104,8 @@
++++ nfs-utils-1.2.3.new/utils/mountd/v4root.c	2012-09-05 13:41:18.000000000 +0530
+@@ -91,7 +91,14 @@
+ 	exp = export_create(&eep, 0);
+ 	if (exp == NULL)
+ 		return NULL;
+-	xlog(D_CALL, "v4root_create: path '%s'", exp->m_export.e_path);
++	/*
++	 * Honor the no_root_squash flag 
++	 */
++	if ((curexp->e_flags & NFSEXP_ROOTSQUASH) == 0)
++		exp->m_export.e_flags &= ~NFSEXP_ROOTSQUASH;
++	xlog(D_CALL, "v4root_create: path '%s' flags 0x%x", 
++		exp->m_export.e_path, exp->m_export.e_flags);
++
+ 	return &exp->m_export;
+ }
+ 
+@@ -105,6 +112,8 @@
  	static int warned = 0;
  
  	ef = get_export_features();
