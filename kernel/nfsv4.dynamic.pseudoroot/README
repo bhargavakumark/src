@@ -91,3 +91,25 @@ To apply this patch
 # cd <nfs-utils-1.2.3-source>
 # patch -p0 <mountd.dynamic.pseudoroot.always
 
+
+nfsd.dynamic.pseudoroot.alternate
+---------------------------------
+This is an alternate patch to include.linux.dynamic.pseudoroot and 
+nfsd.dynamic.pseudoroot which combines both the changes into a single
+patch for just the <kernel-source>/fs/nfsd directory. 
+
+In the newer kernel include/linux/nfsd/nfsd.h has been moved into 
+fs/nfsd. But the 2.6.32 has it in include/linux/nfsd. This patch creates
+a copy of that include/linux/nfsd/nfsd.h in fs/nfsd directory and updates
+all files in fs/nfsd to use the local nfsd.h instead of the one in 
+include/linux/nfsd. 
+
+Be careful when using this patch, the patch creates a new nfsd.h which 
+may or may-not be the same as the kernel you are using. The nfsd.h here
+used is based on a 2.6.32.59 kernel. 
+
+To apply this patch
+
+# cd <kernel-source>/include/linux
+# patch -p0 <include.linux.dynamic.pseudoroot.alternate
+
