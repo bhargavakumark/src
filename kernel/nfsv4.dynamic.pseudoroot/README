@@ -1,0 +1,115 @@
+This patchset is for using NFS dynamic pseudoroot support with 2.6.32 kernel.
+Dynamic pseudoroot is available with 2.6.33 onwards, but if you are stuck with
+2.6.32 kernel and cannot upgrade due to any reasons, this patchset will allow
+dynamic pseudoroot with 2.6.32, you would also need to upgrade nfs-utils to
+1.2.3 or higher (distors would probably be providing 1.2.1 with 2.6.32 kernel)
+
+The origination of this patchset is base on 
+http://article.gmane.org/gmane.linux.nfs/29649
+http://article.gmane.org/gmane.linux.nfs/29645
+http://article.gmane.org/gmane.linux.nfs/29647
+http://article.gmane.org/gmane.linux.nfs/29648
+http://article.gmane.org/gmane.linux.nfs/29646
+http://article.gmane.org/gmane.linux.nfs/29644
+http://article.gmane.org/gmane.linux.nfs/29651
+PATCH 7/7 of the main patchset changes, which is not longer used to communicate
+with mountd about the kernel features
+
+include.linux.dynamic.pseudoroot
+--------------------------------
+defines new flag NFSEXP_V4ROOT that would be used by the kernel for an export
+flag to indicate that the export is created for the sake of dynamic pseudoroot
+and all content in that directory should not be exposed to user and only content
+that is exported in that directory should be shown to user.
+
+also moves nfsd_v4client from vfs.c to common file, which will be used by both
+export.c and vfs.c. In the original patchset this would be in vfs.h, the move
+of include/linux/nfsd/nfsd.h to fs/nfsd/nfsd.h and fs/nfsd/vfs.h is not done
+in 2.6.32, the changes have been done to include/linux/nfsd/nfsd.h
+
+To apply this patch
+
+# cd <kernel-source>/include/linux
+# patch -p0 <include.linux.dynamic.pseudoroot
+
+I have not yet added http://article.gmane.org/gmane.linux.nfs/48982
+
+nfsd.dynamic.pseudoroot
+-----------------------
+* http://article.gmane.org/gmane.linux.nfs/29644
+  allows exports of symlinks
+* http://article.gmane.org/gmane.linux.nfs/29646
+  in readdir hides the entries from pseudoroot directories that are not exported
+* http://article.gmane.org/gmane.linux.nfs/29651
+  On V4ROOT exports, only accept filehandles that are the *root* of some
+  export.  This allows mountd to allow or deny access to individual paths
+  and symlinks on the pseudofilesystem.
+  Note that the checks in readdir and lookup are not enough, since a
+  malicious host with access to the network could guess filehandles that
+  they weren't able to obtain through lookup or readdir.
+  moves nfsd_v4client from vfs.c
+* http://article.gmane.org/gmane.linux.nfs/29647, If /A/mount/point/ has 
+  filesystem "B" mounted on top of it, and if "A"
+  is exported, but not "B", then the nfs server has always returned to the
+  client a filehandle for the mountpoint, instead of for the root of "B",
+  allowing the client to see the subtree of "A" that would otherwise be
+  hidden by B.
+
+  Disable this behavior in the case of V4ROOT exports; we implement the
+  path restrictions of V4ROOT exports by treating *every* directory as if
+  it were a mountpoint, and allowing traversal *only* if the new directory
+  is exported.
+* http://article.gmane.org/gmane.linux.nfs/29648
+  We treat every object as a mountpoint and pretend it doesn't exist if
+  it isn't exported.
+
+To apply this patch
+
+# cd <kernel-source>/fs
+# patch -p0 <nfsd.dynamic.pseudoroot
+
+mountd.dynamic.pseudoroot.always
+--------------------------------
+There is quite a bit code in nfs-utils that is related to dynamic pseudoroot
+in 1.2.3 which may not be available with 1.2.1 (available with most distros
+using 2.6.32 kernel), so upgrade to 1.2.3 is necessary. This patch for 1.2.3
+and not 1.2.1
+
+* With newer kernels /proc/fs/nfsd/export_features is used by kernel and 
+  mountd to communicate about their capabilities. Since this is not available
+  with 2.6.32, this patch always enables dynamic pseudoroot in mountd 
+  regardless of kernel version. Be careful, not to use this patch on machines
+  which do not have the kernel patch for dynamic pseudoroot
+* Also fixes http://article.gmane.org/gmane.linux.nfs/32675, 
+  http://article.gmane.org/gmane.linux.nfs/32831 which doesn't seem
+  to have made into the tree. Instead using 
+  http://article.gmane.org/gmane.linux.nfs/50173 which add no_root_squash
+  to pseudoroot based on the actual export and not always
+
+To apply this patch
+
+# cd <nfs-utils-1.2.3-source>
+# patch -p0 <mountd.dynamic.pseudoroot.always
+
+
+nfsd.dynamic.pseudoroot.alternate
+---------------------------------
+This is an alternate patch to include.linux.dynamic.pseudoroot and 
+nfsd.dynamic.pseudoroot which combines both the changes into a single
+patch for just the <kernel-source>/fs/nfsd directory. 
+
+In the newer kernel include/linux/nfsd/nfsd.h has been moved into 
+fs/nfsd. But the 2.6.32 has it in include/linux/nfsd. This patch creates
+a copy of that include/linux/nfsd/nfsd.h in fs/nfsd directory and updates
+all files in fs/nfsd to use the local nfsd.h instead of the one in 
+include/linux/nfsd. 
+
+Be careful when using this patch, the patch creates a new nfsd.h which 
+may or may-not be the same as the kernel you are using. The nfsd.h here
+used is based on a 2.6.32.59 kernel. 
+
+To apply this patch
+
+# cd <kernel-source>/include/linux
+# patch -p0 <include.linux.dynamic.pseudoroot.alternate
+

@@ -1,0 +1,997 @@
+diff -ruN nfsd/auth.c nfsd.new/auth.c
+--- nfsd/auth.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/auth.c	2012-09-06 16:22:57.000000000 +0530
+@@ -8,7 +8,7 @@
+ #include <linux/sched.h>
+ #include <linux/sunrpc/svc.h>
+ #include <linux/sunrpc/svcauth.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/export.h>
+ #include "auth.h"
+ 
+diff -ruN nfsd/export.c nfsd.new/export.c
+--- nfsd/export.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/export.c	2012-09-06 16:22:57.000000000 +0530
+@@ -29,7 +29,7 @@
+ #include <linux/exportfs.h>
+ 
+ #include <linux/sunrpc/svc.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/nfsfh.h>
+ #include <linux/nfsd/syscall.h>
+ #include <linux/lockd/bind.h>
+@@ -372,10 +372,12 @@
+ static int check_export(struct inode *inode, int flags, unsigned char *uuid)
+ {
+ 
+-	/* We currently export only dirs and regular files.
++	/* 
++	 * We currently export only dirs and regular files.
+ 	 * This is what umountd does.
+ 	 */
+ 	if (!S_ISDIR(inode->i_mode) &&
++	    !S_ISLNK(inode->i_mode) &&
+ 	    !S_ISREG(inode->i_mode))
+ 		return -ENOTDIR;
+ 
+@@ -1440,6 +1442,7 @@
+ 	{ NFSEXP_CROSSMOUNT, {"crossmnt", ""}},
+ 	{ NFSEXP_NOSUBTREECHECK, {"no_subtree_check", ""}},
+ 	{ NFSEXP_NOAUTHNLM, {"insecure_locks", ""}},
++	{ NFSEXP_V4ROOT, {"v4root", ""}},
+ #ifdef MSNFS
+ 	{ NFSEXP_MSNFS, {"msnfs", ""}},
+ #endif
+diff -ruN nfsd/export.h nfsd.new/export.h
+--- nfsd/export.h	1970-01-01 05:30:00.000000000 +0530
++++ nfsd.new/export.h	2012-09-11 03:16:26.000000000 +0530
+@@ -0,0 +1,162 @@
++/*
++ * include/linux/nfsd/export.h
++ * 
++ * Public declarations for NFS exports. The definitions for the
++ * syscall interface are in nfsctl.h
++ *
++ * Copyright (C) 1995-1997 Olaf Kirch <okir@monad.swb.de>
++ */
++
++#ifndef NFSD_EXPORT_H
++#define NFSD_EXPORT_H
++
++# include <linux/types.h>
++#ifdef __KERNEL__
++# include <linux/in.h>
++#endif
++
++/*
++ * Important limits for the exports stuff.
++ */
++#define NFSCLNT_IDMAX		1024
++#define NFSCLNT_ADDRMAX		16
++#define NFSCLNT_KEYMAX		32
++
++/*
++ * Export flags.
++ */
++#define NFSEXP_READONLY		0x0001
++#define NFSEXP_INSECURE_PORT	0x0002
++#define NFSEXP_ROOTSQUASH	0x0004
++#define NFSEXP_ALLSQUASH	0x0008
++#define NFSEXP_ASYNC		0x0010
++#define NFSEXP_GATHERED_WRITES	0x0020
++/* 40 80 100 currently unused */
++#define NFSEXP_NOHIDE		0x0200
++#define NFSEXP_NOSUBTREECHECK	0x0400
++#define	NFSEXP_NOAUTHNLM	0x0800		/* Don't authenticate NLM requests - just trust */
++#define NFSEXP_MSNFS		0x1000	/* do silly things that MS clients expect */
++#define NFSEXP_FSID		0x2000
++#define	NFSEXP_CROSSMOUNT	0x4000
++#define	NFSEXP_NOACL		0x8000	/* reserved for possible ACL related use */
++/*
+++ * The NFSEXP_V4ROOT flag causes the kernel to give access only to NFSv4
+++ * clients, and only to the single directory that is the root of the
+++ * export; further lookup and readdir operations are treated as if every
+++ * subdirectory was a mountpoint, and ignored if they are not themselves
+++ * exported.  This is used by nfsd and mountd to construct the NFSv4
+++ * pseudofilesystem, which provides access only to paths leading to each
+++ * exported filesystem.
+++ */
++#define	NFSEXP_V4ROOT		0x10000
++#define NFSEXP_ALLFLAGS		0x1FE3F
++
++/* The flags that may vary depending on security flavor: */
++#define NFSEXP_SECINFO_FLAGS	(NFSEXP_READONLY | NFSEXP_ROOTSQUASH \
++					| NFSEXP_ALLSQUASH)
++
++#ifdef __KERNEL__
++
++/*
++ * FS Locations
++ */
++
++#define MAX_FS_LOCATIONS	128
++
++struct nfsd4_fs_location {
++	char *hosts; /* colon separated list of hosts */
++	char *path;  /* slash separated list of path components */
++};
++
++struct nfsd4_fs_locations {
++	uint32_t locations_count;
++	struct nfsd4_fs_location *locations;
++/* If we're not actually serving this data ourselves (only providing a
++ * list of replicas that do serve it) then we set "migrated": */
++	int migrated;
++};
++
++/*
++ * We keep an array of pseudoflavors with the export, in order from most
++ * to least preferred.  For the forseeable future, we don't expect more
++ * than the eight pseudoflavors null, unix, krb5, krb5i, krb5p, skpm3,
++ * spkm3i, and spkm3p (and using all 8 at once should be rare).
++ */
++#define MAX_SECINFO_LIST	8
++
++struct exp_flavor_info {
++	u32	pseudoflavor;
++	u32	flags;
++};
++
++struct svc_export {
++	struct cache_head	h;
++	struct auth_domain *	ex_client;
++	int			ex_flags;
++	struct path		ex_path;
++	char			*ex_pathname;
++	uid_t			ex_anon_uid;
++	gid_t			ex_anon_gid;
++	int			ex_fsid;
++	unsigned char *		ex_uuid; /* 16 byte fsid */
++	struct nfsd4_fs_locations ex_fslocs;
++	int			ex_nflavors;
++	struct exp_flavor_info	ex_flavors[MAX_SECINFO_LIST];
++};
++
++/* an "export key" (expkey) maps a filehandlefragement to an
++ * svc_export for a given client.  There can be several per export,
++ * for the different fsid types.
++ */
++struct svc_expkey {
++	struct cache_head	h;
++
++	struct auth_domain *	ek_client;
++	int			ek_fsidtype;
++	u32			ek_fsid[6];
++
++	struct path		ek_path;
++};
++
++#define EX_SECURE(exp)		(!((exp)->ex_flags & NFSEXP_INSECURE_PORT))
++#define EX_ISSYNC(exp)		(!((exp)->ex_flags & NFSEXP_ASYNC))
++#define EX_NOHIDE(exp)		((exp)->ex_flags & NFSEXP_NOHIDE)
++#define EX_WGATHER(exp)		((exp)->ex_flags & NFSEXP_GATHERED_WRITES)
++
++int nfsexp_flags(struct svc_rqst *rqstp, struct svc_export *exp);
++__be32 check_nfsd_access(struct svc_export *exp, struct svc_rqst *rqstp);
++
++/*
++ * Function declarations
++ */
++int			nfsd_export_init(void);
++void			nfsd_export_shutdown(void);
++void			nfsd_export_flush(void);
++void			exp_readlock(void);
++void			exp_readunlock(void);
++struct svc_export *	rqst_exp_get_by_name(struct svc_rqst *,
++					     struct path *);
++struct svc_export *	rqst_exp_parent(struct svc_rqst *,
++					struct path *);
++int			exp_rootfh(struct auth_domain *, 
++					char *path, struct knfsd_fh *, int maxsize);
++__be32			exp_pseudoroot(struct svc_rqst *, struct svc_fh *);
++__be32			nfserrno(int errno);
++
++extern struct cache_detail svc_export_cache;
++
++static inline void exp_put(struct svc_export *exp)
++{
++	cache_put(&exp->h, &svc_export_cache);
++}
++
++static inline void exp_get(struct svc_export *exp)
++{
++	cache_get(&exp->h);
++}
++struct svc_export * rqst_exp_find(struct svc_rqst *, int, u32 *);
++
++#endif /* __KERNEL__ */
++
++#endif /* NFSD_EXPORT_H */
++
+diff -ruN nfsd/lockd.c nfsd.new/lockd.c
+--- nfsd/lockd.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/lockd.c	2012-09-06 16:22:57.000000000 +0530
+@@ -14,7 +14,7 @@
+ #include <linux/mount.h>
+ #include <linux/sunrpc/clnt.h>
+ #include <linux/sunrpc/svc.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/lockd/bind.h>
+ 
+ #define NFSDDBG_FACILITY		NFSDDBG_LOCKD
+diff -ruN nfsd/nfs2acl.c nfsd.new/nfs2acl.c
+--- nfsd/nfs2acl.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfs2acl.c	2012-09-06 16:22:57.000000000 +0530
+@@ -8,7 +8,7 @@
+ 
+ #include <linux/sunrpc/svc.h>
+ #include <linux/nfs.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/cache.h>
+ #include <linux/nfsd/xdr.h>
+ #include <linux/nfsd/xdr3.h>
+diff -ruN nfsd/nfs3acl.c nfsd.new/nfs3acl.c
+--- nfsd/nfs3acl.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfs3acl.c	2012-09-06 16:22:57.000000000 +0530
+@@ -8,7 +8,7 @@
+ 
+ #include <linux/sunrpc/svc.h>
+ #include <linux/nfs3.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/cache.h>
+ #include <linux/nfsd/xdr3.h>
+ #include <linux/posix_acl.h>
+diff -ruN nfsd/nfs3proc.c nfsd.new/nfs3proc.c
+--- nfsd/nfs3proc.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfs3proc.c	2012-09-06 16:22:57.000000000 +0530
+@@ -21,7 +21,7 @@
+ #include <linux/magic.h>
+ 
+ #include <linux/sunrpc/svc.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/cache.h>
+ #include <linux/nfsd/xdr3.h>
+ #include <linux/nfs3.h>
+diff -ruN nfsd/nfs3xdr.c nfsd.new/nfs3xdr.c
+--- nfsd/nfs3xdr.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfs3xdr.c	2012-09-06 16:22:57.000000000 +0530
+@@ -19,7 +19,7 @@
+ #include <linux/vfs.h>
+ #include <linux/sunrpc/xdr.h>
+ #include <linux/sunrpc/svc.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/xdr3.h>
+ #include "auth.h"
+ 
+diff -ruN nfsd/nfs4callback.c nfsd.new/nfs4callback.c
+--- nfsd/nfs4callback.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfs4callback.c	2012-09-06 16:22:57.000000000 +0530
+@@ -44,7 +44,7 @@
+ #include <linux/sunrpc/svc.h>
+ #include <linux/sunrpc/clnt.h>
+ #include <linux/sunrpc/svcsock.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/state.h>
+ #include <linux/sunrpc/sched.h>
+ #include <linux/nfs4.h>
+diff -ruN nfsd/nfs4proc.c nfsd.new/nfs4proc.c
+--- nfsd/nfs4proc.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfs4proc.c	2012-09-06 16:22:57.000000000 +0530
+@@ -41,7 +41,7 @@
+ #include <linux/file.h>
+ 
+ #include <linux/sunrpc/svc.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/cache.h>
+ #include <linux/nfs4.h>
+ #include <linux/nfsd/state.h>
+diff -ruN nfsd/nfs4recover.c nfsd.new/nfs4recover.c
+--- nfsd/nfs4recover.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfs4recover.c	2012-09-06 16:22:57.000000000 +0530
+@@ -35,7 +35,7 @@
+ 
+ #include <linux/err.h>
+ #include <linux/sunrpc/svc.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfs4.h>
+ #include <linux/nfsd/state.h>
+ #include <linux/nfsd/xdr4.h>
+diff -ruN nfsd/nfs4state.c nfsd.new/nfs4state.c
+--- nfsd/nfs4state.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfs4state.c	2012-09-06 16:22:57.000000000 +0530
+@@ -39,7 +39,7 @@
+ #include <linux/slab.h>
+ 
+ #include <linux/sunrpc/svc.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/cache.h>
+ #include <linux/file.h>
+ #include <linux/mount.h>
+diff -ruN nfsd/nfs4xdr.c nfsd.new/nfs4xdr.c
+--- nfsd/nfs4xdr.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfs4xdr.c	2012-09-06 16:22:57.000000000 +0530
+@@ -49,7 +49,7 @@
+ #include <linux/sunrpc/xdr.h>
+ #include <linux/sunrpc/svc.h>
+ #include <linux/sunrpc/clnt.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/state.h>
+ #include <linux/nfsd/xdr4.h>
+ #include <linux/nfsd_idmap.h>
+@@ -2207,11 +2207,14 @@
+ 	 * we will not follow the cross mount and will fill the attribtutes
+ 	 * directly from the mountpoint dentry.
+ 	 */
+-	if (d_mountpoint(dentry) && !attributes_need_mount(cd->rd_bmval))
+-		ignore_crossmnt = 1;
+-	else if (d_mountpoint(dentry)) {
++	if (nfsd_mountpoint(dentry, exp)) {
+ 		int err;
+ 
++		if (!(exp->ex_flags & NFSEXP_V4ROOT)
++				&& !attributes_need_mount(cd->rd_bmval)) {
++			ignore_crossmnt = 1;
++			goto out_encode;
++		}
+ 		/*
+ 		 * Why the heck aren't we just using nfsd_lookup??
+ 		 * Different "."/".." handling?  Something else?
+@@ -2227,6 +2230,7 @@
+ 			goto out_put;
+ 
+ 	}
++out_encode:
+ 	nfserr = nfsd4_encode_fattr(NULL, exp, dentry, p, buflen, cd->rd_bmval,
+ 					cd->rd_rqstp, ignore_crossmnt);
+ out_put:
+diff -ruN nfsd/nfscache.c nfsd.new/nfscache.c
+--- nfsd/nfscache.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfscache.c	2012-09-06 16:22:57.000000000 +0530
+@@ -18,7 +18,7 @@
+ #include <linux/list.h>
+ 
+ #include <linux/sunrpc/svc.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/cache.h>
+ 
+ /* Size of reply cache. Common values are:
+diff -ruN nfsd/nfsctl.c nfsd.new/nfsctl.c
+--- nfsd/nfsctl.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfsctl.c	2012-09-06 16:22:57.000000000 +0530
+@@ -32,7 +32,7 @@
+ #include <linux/lockd/bind.h>
+ #include <linux/sunrpc/svc.h>
+ #include <linux/sunrpc/svcsock.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/cache.h>
+ #include <linux/nfsd/xdr.h>
+ #include <linux/nfsd/syscall.h>
+diff -ruN nfsd/nfsd.h nfsd.new/nfsd.h
+--- nfsd/nfsd.h	1970-01-01 05:30:00.000000000 +0530
++++ nfsd.new/nfsd.h	2012-09-11 03:16:43.000000000 +0530
+@@ -0,0 +1,430 @@
++/*
++ * linux/include/linux/nfsd/nfsd.h
++ *
++ * Hodge-podge collection of knfsd-related stuff.
++ * I will sort this out later.
++ *
++ * Copyright (C) 1995-1997 Olaf Kirch <okir@monad.swb.de>
++ */
++
++#ifndef LINUX_NFSD_NFSD_H
++#define LINUX_NFSD_NFSD_H
++
++#include <linux/types.h>
++#include <linux/unistd.h>
++#include <linux/fs.h>
++#include <linux/posix_acl.h>
++#include <linux/mount.h>
++
++#include <linux/nfsd/debug.h>
++#include <linux/nfsd/nfsfh.h>
++#include "export.h"
++#include <linux/nfsd/stats.h>
++/*
++ * nfsd version
++ */
++#define NFSD_SUPPORTED_MINOR_VERSION	1
++
++/*
++ * Flags for nfsd_permission
++ */
++#define NFSD_MAY_NOP		0
++#define NFSD_MAY_EXEC		1 /* == MAY_EXEC */
++#define NFSD_MAY_WRITE		2 /* == MAY_WRITE */
++#define NFSD_MAY_READ		4 /* == MAY_READ */
++#define NFSD_MAY_SATTR		8
++#define NFSD_MAY_TRUNC		16
++#define NFSD_MAY_LOCK		32
++#define NFSD_MAY_OWNER_OVERRIDE	64
++#define NFSD_MAY_LOCAL_ACCESS	128 /* IRIX doing local access check on device special file*/
++#define NFSD_MAY_BYPASS_GSS_ON_ROOT 256
++
++#define NFSD_MAY_CREATE		(NFSD_MAY_EXEC|NFSD_MAY_WRITE)
++#define NFSD_MAY_REMOVE		(NFSD_MAY_EXEC|NFSD_MAY_WRITE|NFSD_MAY_TRUNC)
++
++/*
++ * Callback function for readdir
++ */
++struct readdir_cd {
++	__be32			err;	/* 0, nfserr, or nfserr_eof */
++};
++typedef int (*nfsd_dirop_t)(struct inode *, struct dentry *, int, int);
++
++extern struct svc_program	nfsd_program;
++extern struct svc_version	nfsd_version2, nfsd_version3,
++				nfsd_version4;
++extern u32			nfsd_supported_minorversion;
++extern struct mutex		nfsd_mutex;
++extern struct svc_serv		*nfsd_serv;
++extern spinlock_t		nfsd_drc_lock;
++extern unsigned int		nfsd_drc_max_mem;
++extern unsigned int		nfsd_drc_mem_used;
++
++extern const struct seq_operations nfs_exports_op;
++
++/*
++ * Function prototypes.
++ */
++int		nfsd_svc(unsigned short port, int nrservs);
++int		nfsd_dispatch(struct svc_rqst *rqstp, __be32 *statp);
++
++int		nfsd_nrthreads(void);
++int		nfsd_nrpools(void);
++int		nfsd_get_nrthreads(int n, int *);
++int		nfsd_set_nrthreads(int n, int *);
++
++/* nfsd/vfs.c */
++int		fh_lock_parent(struct svc_fh *, struct dentry *);
++int		nfsd_racache_init(int);
++void		nfsd_racache_shutdown(void);
++int		nfsd_cross_mnt(struct svc_rqst *rqstp, struct dentry **dpp,
++		                struct svc_export **expp);
++__be32		nfsd_lookup(struct svc_rqst *, struct svc_fh *,
++				const char *, unsigned int, struct svc_fh *);
++__be32		 nfsd_lookup_dentry(struct svc_rqst *, struct svc_fh *,
++				const char *, unsigned int,
++				struct svc_export **, struct dentry **);
++__be32		nfsd_setattr(struct svc_rqst *, struct svc_fh *,
++				struct iattr *, int, time_t);
++int nfsd_mountpoint(struct dentry *, struct svc_export *);
++#ifdef CONFIG_NFSD_V4
++__be32          nfsd4_set_nfs4_acl(struct svc_rqst *, struct svc_fh *,
++                    struct nfs4_acl *);
++int             nfsd4_get_nfs4_acl(struct svc_rqst *, struct dentry *, struct nfs4_acl **);
++#endif /* CONFIG_NFSD_V4 */
++__be32		nfsd_create(struct svc_rqst *, struct svc_fh *,
++				char *name, int len, struct iattr *attrs,
++				int type, dev_t rdev, struct svc_fh *res);
++#ifdef CONFIG_NFSD_V3
++__be32		nfsd_access(struct svc_rqst *, struct svc_fh *, u32 *, u32 *);
++__be32		nfsd_create_v3(struct svc_rqst *, struct svc_fh *,
++				char *name, int len, struct iattr *attrs,
++				struct svc_fh *res, int createmode,
++				u32 *verifier, int *truncp, int *created);
++__be32		nfsd_commit(struct svc_rqst *, struct svc_fh *,
++				loff_t, unsigned long);
++#endif /* CONFIG_NFSD_V3 */
++__be32		nfsd_open(struct svc_rqst *, struct svc_fh *, int,
++				int, struct file **);
++void		nfsd_close(struct file *);
++__be32 		nfsd_read(struct svc_rqst *, struct svc_fh *, struct file *,
++				loff_t, struct kvec *, int, unsigned long *);
++__be32 		nfsd_write(struct svc_rqst *, struct svc_fh *,struct file *,
++				loff_t, struct kvec *,int, unsigned long *, int *);
++__be32		nfsd_readlink(struct svc_rqst *, struct svc_fh *,
++				char *, int *);
++__be32		nfsd_symlink(struct svc_rqst *, struct svc_fh *,
++				char *name, int len, char *path, int plen,
++				struct svc_fh *res, struct iattr *);
++__be32		nfsd_link(struct svc_rqst *, struct svc_fh *,
++				char *, int, struct svc_fh *);
++__be32		nfsd_rename(struct svc_rqst *,
++				struct svc_fh *, char *, int,
++				struct svc_fh *, char *, int);
++__be32		nfsd_remove(struct svc_rqst *,
++				struct svc_fh *, char *, int);
++__be32		nfsd_unlink(struct svc_rqst *, struct svc_fh *, int type,
++				char *name, int len);
++int		nfsd_truncate(struct svc_rqst *, struct svc_fh *,
++				unsigned long size);
++__be32		nfsd_readdir(struct svc_rqst *, struct svc_fh *,
++			     loff_t *, struct readdir_cd *, filldir_t);
++__be32		nfsd_statfs(struct svc_rqst *, struct svc_fh *,
++				struct kstatfs *, int access);
++
++int		nfsd_notify_change(struct inode *, struct iattr *);
++__be32		nfsd_permission(struct svc_rqst *, struct svc_export *,
++				struct dentry *, int);
++int		nfsd_sync_dir(struct dentry *dp);
++
++#if defined(CONFIG_NFSD_V2_ACL) || defined(CONFIG_NFSD_V3_ACL)
++#ifdef CONFIG_NFSD_V2_ACL
++extern struct svc_version nfsd_acl_version2;
++#else
++#define nfsd_acl_version2 NULL
++#endif
++#ifdef CONFIG_NFSD_V3_ACL
++extern struct svc_version nfsd_acl_version3;
++#else
++#define nfsd_acl_version3 NULL
++#endif
++struct posix_acl *nfsd_get_posix_acl(struct svc_fh *, int);
++int nfsd_set_posix_acl(struct svc_fh *, int, struct posix_acl *);
++#endif
++
++enum vers_op {NFSD_SET, NFSD_CLEAR, NFSD_TEST, NFSD_AVAIL };
++int nfsd_vers(int vers, enum vers_op change);
++int nfsd_minorversion(u32 minorversion, enum vers_op change);
++void nfsd_reset_versions(void);
++int nfsd_create_serv(void);
++
++extern int nfsd_max_blksize;
++
++static inline int nfsd_v4client(struct svc_rqst *rq)
++{
++	return rq->rq_prog == NFS_PROGRAM && rq->rq_vers == 4;
++}
++
++/* 
++ * NFSv4 State
++ */
++#ifdef CONFIG_NFSD_V4
++extern unsigned int max_delegations;
++int nfs4_state_init(void);
++void nfsd4_free_slabs(void);
++int nfs4_state_start(void);
++void nfs4_state_shutdown(void);
++time_t nfs4_lease_time(void);
++void nfs4_reset_lease(time_t leasetime);
++int nfs4_reset_recoverydir(char *recdir);
++#else
++static inline int nfs4_state_init(void) { return 0; }
++static inline void nfsd4_free_slabs(void) { }
++static inline int nfs4_state_start(void) { return 0; }
++static inline void nfs4_state_shutdown(void) { }
++static inline time_t nfs4_lease_time(void) { return 0; }
++static inline void nfs4_reset_lease(time_t leasetime) { }
++static inline int nfs4_reset_recoverydir(char *recdir) { return 0; }
++#endif
++
++/*
++ * lockd binding
++ */
++void		nfsd_lockd_init(void);
++void		nfsd_lockd_shutdown(void);
++
++
++/*
++ * These macros provide pre-xdr'ed values for faster operation.
++ */
++#define	nfs_ok			cpu_to_be32(NFS_OK)
++#define	nfserr_perm		cpu_to_be32(NFSERR_PERM)
++#define	nfserr_noent		cpu_to_be32(NFSERR_NOENT)
++#define	nfserr_io		cpu_to_be32(NFSERR_IO)
++#define	nfserr_nxio		cpu_to_be32(NFSERR_NXIO)
++#define	nfserr_eagain		cpu_to_be32(NFSERR_EAGAIN)
++#define	nfserr_acces		cpu_to_be32(NFSERR_ACCES)
++#define	nfserr_exist		cpu_to_be32(NFSERR_EXIST)
++#define	nfserr_xdev		cpu_to_be32(NFSERR_XDEV)
++#define	nfserr_nodev		cpu_to_be32(NFSERR_NODEV)
++#define	nfserr_notdir		cpu_to_be32(NFSERR_NOTDIR)
++#define	nfserr_isdir		cpu_to_be32(NFSERR_ISDIR)
++#define	nfserr_inval		cpu_to_be32(NFSERR_INVAL)
++#define	nfserr_fbig		cpu_to_be32(NFSERR_FBIG)
++#define	nfserr_nospc		cpu_to_be32(NFSERR_NOSPC)
++#define	nfserr_rofs		cpu_to_be32(NFSERR_ROFS)
++#define	nfserr_mlink		cpu_to_be32(NFSERR_MLINK)
++#define	nfserr_opnotsupp	cpu_to_be32(NFSERR_OPNOTSUPP)
++#define	nfserr_nametoolong	cpu_to_be32(NFSERR_NAMETOOLONG)
++#define	nfserr_notempty		cpu_to_be32(NFSERR_NOTEMPTY)
++#define	nfserr_dquot		cpu_to_be32(NFSERR_DQUOT)
++#define	nfserr_stale		cpu_to_be32(NFSERR_STALE)
++#define	nfserr_remote		cpu_to_be32(NFSERR_REMOTE)
++#define	nfserr_wflush		cpu_to_be32(NFSERR_WFLUSH)
++#define	nfserr_badhandle	cpu_to_be32(NFSERR_BADHANDLE)
++#define	nfserr_notsync		cpu_to_be32(NFSERR_NOT_SYNC)
++#define	nfserr_badcookie	cpu_to_be32(NFSERR_BAD_COOKIE)
++#define	nfserr_notsupp		cpu_to_be32(NFSERR_NOTSUPP)
++#define	nfserr_toosmall		cpu_to_be32(NFSERR_TOOSMALL)
++#define	nfserr_serverfault	cpu_to_be32(NFSERR_SERVERFAULT)
++#define	nfserr_badtype		cpu_to_be32(NFSERR_BADTYPE)
++#define	nfserr_jukebox		cpu_to_be32(NFSERR_JUKEBOX)
++#define	nfserr_denied		cpu_to_be32(NFSERR_DENIED)
++#define	nfserr_deadlock		cpu_to_be32(NFSERR_DEADLOCK)
++#define nfserr_expired          cpu_to_be32(NFSERR_EXPIRED)
++#define	nfserr_bad_cookie	cpu_to_be32(NFSERR_BAD_COOKIE)
++#define	nfserr_same		cpu_to_be32(NFSERR_SAME)
++#define	nfserr_clid_inuse	cpu_to_be32(NFSERR_CLID_INUSE)
++#define	nfserr_stale_clientid	cpu_to_be32(NFSERR_STALE_CLIENTID)
++#define	nfserr_resource		cpu_to_be32(NFSERR_RESOURCE)
++#define	nfserr_moved		cpu_to_be32(NFSERR_MOVED)
++#define	nfserr_nofilehandle	cpu_to_be32(NFSERR_NOFILEHANDLE)
++#define	nfserr_minor_vers_mismatch	cpu_to_be32(NFSERR_MINOR_VERS_MISMATCH)
++#define nfserr_share_denied	cpu_to_be32(NFSERR_SHARE_DENIED)
++#define nfserr_stale_stateid	cpu_to_be32(NFSERR_STALE_STATEID)
++#define nfserr_old_stateid	cpu_to_be32(NFSERR_OLD_STATEID)
++#define nfserr_bad_stateid	cpu_to_be32(NFSERR_BAD_STATEID)
++#define nfserr_bad_seqid	cpu_to_be32(NFSERR_BAD_SEQID)
++#define	nfserr_symlink		cpu_to_be32(NFSERR_SYMLINK)
++#define	nfserr_not_same		cpu_to_be32(NFSERR_NOT_SAME)
++#define	nfserr_restorefh	cpu_to_be32(NFSERR_RESTOREFH)
++#define	nfserr_attrnotsupp	cpu_to_be32(NFSERR_ATTRNOTSUPP)
++#define	nfserr_bad_xdr		cpu_to_be32(NFSERR_BAD_XDR)
++#define	nfserr_openmode		cpu_to_be32(NFSERR_OPENMODE)
++#define	nfserr_locks_held	cpu_to_be32(NFSERR_LOCKS_HELD)
++#define	nfserr_op_illegal	cpu_to_be32(NFSERR_OP_ILLEGAL)
++#define	nfserr_grace		cpu_to_be32(NFSERR_GRACE)
++#define	nfserr_no_grace		cpu_to_be32(NFSERR_NO_GRACE)
++#define	nfserr_reclaim_bad	cpu_to_be32(NFSERR_RECLAIM_BAD)
++#define	nfserr_badname		cpu_to_be32(NFSERR_BADNAME)
++#define	nfserr_cb_path_down	cpu_to_be32(NFSERR_CB_PATH_DOWN)
++#define	nfserr_locked		cpu_to_be32(NFSERR_LOCKED)
++#define	nfserr_wrongsec		cpu_to_be32(NFSERR_WRONGSEC)
++#define nfserr_badiomode		cpu_to_be32(NFS4ERR_BADIOMODE)
++#define nfserr_badlayout		cpu_to_be32(NFS4ERR_BADLAYOUT)
++#define nfserr_bad_session_digest	cpu_to_be32(NFS4ERR_BAD_SESSION_DIGEST)
++#define nfserr_badsession		cpu_to_be32(NFS4ERR_BADSESSION)
++#define nfserr_badslot			cpu_to_be32(NFS4ERR_BADSLOT)
++#define nfserr_complete_already		cpu_to_be32(NFS4ERR_COMPLETE_ALREADY)
++#define nfserr_conn_not_bound_to_session cpu_to_be32(NFS4ERR_CONN_NOT_BOUND_TO_SESSION)
++#define nfserr_deleg_already_wanted	cpu_to_be32(NFS4ERR_DELEG_ALREADY_WANTED)
++#define nfserr_back_chan_busy		cpu_to_be32(NFS4ERR_BACK_CHAN_BUSY)
++#define nfserr_layouttrylater		cpu_to_be32(NFS4ERR_LAYOUTTRYLATER)
++#define nfserr_layoutunavailable	cpu_to_be32(NFS4ERR_LAYOUTUNAVAILABLE)
++#define nfserr_nomatching_layout	cpu_to_be32(NFS4ERR_NOMATCHING_LAYOUT)
++#define nfserr_recallconflict		cpu_to_be32(NFS4ERR_RECALLCONFLICT)
++#define nfserr_unknown_layouttype	cpu_to_be32(NFS4ERR_UNKNOWN_LAYOUTTYPE)
++#define nfserr_seq_misordered		cpu_to_be32(NFS4ERR_SEQ_MISORDERED)
++#define nfserr_sequence_pos		cpu_to_be32(NFS4ERR_SEQUENCE_POS)
++#define nfserr_req_too_big		cpu_to_be32(NFS4ERR_REQ_TOO_BIG)
++#define nfserr_rep_too_big		cpu_to_be32(NFS4ERR_REP_TOO_BIG)
++#define nfserr_rep_too_big_to_cache	cpu_to_be32(NFS4ERR_REP_TOO_BIG_TO_CACHE)
++#define nfserr_retry_uncached_rep	cpu_to_be32(NFS4ERR_RETRY_UNCACHED_REP)
++#define nfserr_unsafe_compound		cpu_to_be32(NFS4ERR_UNSAFE_COMPOUND)
++#define nfserr_too_many_ops		cpu_to_be32(NFS4ERR_TOO_MANY_OPS)
++#define nfserr_op_not_in_session	cpu_to_be32(NFS4ERR_OP_NOT_IN_SESSION)
++#define nfserr_hash_alg_unsupp		cpu_to_be32(NFS4ERR_HASH_ALG_UNSUPP)
++#define nfserr_clientid_busy		cpu_to_be32(NFS4ERR_CLIENTID_BUSY)
++#define nfserr_pnfs_io_hole		cpu_to_be32(NFS4ERR_PNFS_IO_HOLE)
++#define nfserr_seq_false_retry		cpu_to_be32(NFS4ERR_SEQ_FALSE_RETRY)
++#define nfserr_bad_high_slot		cpu_to_be32(NFS4ERR_BAD_HIGH_SLOT)
++#define nfserr_deadsession		cpu_to_be32(NFS4ERR_DEADSESSION)
++#define nfserr_encr_alg_unsupp		cpu_to_be32(NFS4ERR_ENCR_ALG_UNSUPP)
++#define nfserr_pnfs_no_layout		cpu_to_be32(NFS4ERR_PNFS_NO_LAYOUT)
++#define nfserr_not_only_op		cpu_to_be32(NFS4ERR_NOT_ONLY_OP)
++#define nfserr_wrong_cred		cpu_to_be32(NFS4ERR_WRONG_CRED)
++#define nfserr_wrong_type		cpu_to_be32(NFS4ERR_WRONG_TYPE)
++#define nfserr_dirdeleg_unavail		cpu_to_be32(NFS4ERR_DIRDELEG_UNAVAIL)
++#define nfserr_reject_deleg		cpu_to_be32(NFS4ERR_REJECT_DELEG)
++#define nfserr_returnconflict		cpu_to_be32(NFS4ERR_RETURNCONFLICT)
++#define nfserr_deleg_revoked		cpu_to_be32(NFS4ERR_DELEG_REVOKED)
++
++/* error codes for internal use */
++/* if a request fails due to kmalloc failure, it gets dropped.
++ *  Client should resend eventually
++ */
++#define	nfserr_dropit		cpu_to_be32(30000)
++/* end-of-file indicator in readdir */
++#define	nfserr_eof		cpu_to_be32(30001)
++/* replay detected */
++#define	nfserr_replay_me	cpu_to_be32(11001)
++/* nfs41 replay detected */
++#define	nfserr_replay_cache	cpu_to_be32(11002)
++
++/* Check for dir entries '.' and '..' */
++#define isdotent(n, l)	(l < 3 && n[0] == '.' && (l == 1 || n[1] == '.'))
++
++/*
++ * Time of server startup
++ */
++extern struct timeval	nfssvc_boot;
++
++#ifdef CONFIG_NFSD_V4
++
++/* before processing a COMPOUND operation, we have to check that there
++ * is enough space in the buffer for XDR encode to succeed.  otherwise,
++ * we might process an operation with side effects, and be unable to
++ * tell the client that the operation succeeded.
++ *
++ * COMPOUND_SLACK_SPACE - this is the minimum bytes of buffer space
++ * needed to encode an "ordinary" _successful_ operation.  (GETATTR,
++ * READ, READDIR, and READLINK have their own buffer checks.)  if we
++ * fall below this level, we fail the next operation with NFS4ERR_RESOURCE.
++ *
++ * COMPOUND_ERR_SLACK_SPACE - this is the minimum bytes of buffer space
++ * needed to encode an operation which has failed with NFS4ERR_RESOURCE.
++ * care is taken to ensure that we never fall below this level for any
++ * reason.
++ */
++#define	COMPOUND_SLACK_SPACE		140    /* OP_GETFH */
++#define COMPOUND_ERR_SLACK_SPACE	12     /* OP_SETATTR */
++
++#define NFSD_LEASE_TIME                 (nfs4_lease_time())
++#define NFSD_LAUNDROMAT_MINTIMEOUT      10   /* seconds */
++
++/*
++ * The following attributes are currently not supported by the NFSv4 server:
++ *    ARCHIVE       (deprecated anyway)
++ *    HIDDEN        (unlikely to be supported any time soon)
++ *    MIMETYPE      (unlikely to be supported any time soon)
++ *    QUOTA_*       (will be supported in a forthcoming patch)
++ *    SYSTEM        (unlikely to be supported any time soon)
++ *    TIME_BACKUP   (unlikely to be supported any time soon)
++ *    TIME_CREATE   (unlikely to be supported any time soon)
++ */
++#define NFSD4_SUPPORTED_ATTRS_WORD0                                                         \
++(FATTR4_WORD0_SUPPORTED_ATTRS   | FATTR4_WORD0_TYPE         | FATTR4_WORD0_FH_EXPIRE_TYPE   \
++ | FATTR4_WORD0_CHANGE          | FATTR4_WORD0_SIZE         | FATTR4_WORD0_LINK_SUPPORT     \
++ | FATTR4_WORD0_SYMLINK_SUPPORT | FATTR4_WORD0_NAMED_ATTR   | FATTR4_WORD0_FSID             \
++ | FATTR4_WORD0_UNIQUE_HANDLES  | FATTR4_WORD0_LEASE_TIME   | FATTR4_WORD0_RDATTR_ERROR     \
++ | FATTR4_WORD0_ACLSUPPORT      | FATTR4_WORD0_CANSETTIME   | FATTR4_WORD0_CASE_INSENSITIVE \
++ | FATTR4_WORD0_CASE_PRESERVING | FATTR4_WORD0_CHOWN_RESTRICTED                             \
++ | FATTR4_WORD0_FILEHANDLE      | FATTR4_WORD0_FILEID       | FATTR4_WORD0_FILES_AVAIL      \
++ | FATTR4_WORD0_FILES_FREE      | FATTR4_WORD0_FILES_TOTAL  | FATTR4_WORD0_FS_LOCATIONS | FATTR4_WORD0_HOMOGENEOUS      \
++ | FATTR4_WORD0_MAXFILESIZE     | FATTR4_WORD0_MAXLINK      | FATTR4_WORD0_MAXNAME          \
++ | FATTR4_WORD0_MAXREAD         | FATTR4_WORD0_MAXWRITE     | FATTR4_WORD0_ACL)
++
++#define NFSD4_SUPPORTED_ATTRS_WORD1                                                         \
++(FATTR4_WORD1_MODE              | FATTR4_WORD1_NO_TRUNC     | FATTR4_WORD1_NUMLINKS         \
++ | FATTR4_WORD1_OWNER	        | FATTR4_WORD1_OWNER_GROUP  | FATTR4_WORD1_RAWDEV           \
++ | FATTR4_WORD1_SPACE_AVAIL     | FATTR4_WORD1_SPACE_FREE   | FATTR4_WORD1_SPACE_TOTAL      \
++ | FATTR4_WORD1_SPACE_USED      | FATTR4_WORD1_TIME_ACCESS  | FATTR4_WORD1_TIME_ACCESS_SET  \
++ | FATTR4_WORD1_TIME_DELTA   | FATTR4_WORD1_TIME_METADATA    \
++ | FATTR4_WORD1_TIME_MODIFY     | FATTR4_WORD1_TIME_MODIFY_SET | FATTR4_WORD1_MOUNTED_ON_FILEID)
++
++#define NFSD4_SUPPORTED_ATTRS_WORD2 0
++
++#define NFSD4_1_SUPPORTED_ATTRS_WORD0 \
++	NFSD4_SUPPORTED_ATTRS_WORD0
++
++#define NFSD4_1_SUPPORTED_ATTRS_WORD1 \
++	NFSD4_SUPPORTED_ATTRS_WORD1
++
++#define NFSD4_1_SUPPORTED_ATTRS_WORD2 \
++	(NFSD4_SUPPORTED_ATTRS_WORD2 | FATTR4_WORD2_SUPPATTR_EXCLCREAT)
++
++static inline u32 nfsd_suppattrs0(u32 minorversion)
++{
++	return minorversion ? NFSD4_1_SUPPORTED_ATTRS_WORD0
++			    : NFSD4_SUPPORTED_ATTRS_WORD0;
++}
++
++static inline u32 nfsd_suppattrs1(u32 minorversion)
++{
++	return minorversion ? NFSD4_1_SUPPORTED_ATTRS_WORD1
++			    : NFSD4_SUPPORTED_ATTRS_WORD1;
++}
++
++static inline u32 nfsd_suppattrs2(u32 minorversion)
++{
++	return minorversion ? NFSD4_1_SUPPORTED_ATTRS_WORD2
++			    : NFSD4_SUPPORTED_ATTRS_WORD2;
++}
++
++/* These will return ERR_INVAL if specified in GETATTR or READDIR. */
++#define NFSD_WRITEONLY_ATTRS_WORD1							    \
++(FATTR4_WORD1_TIME_ACCESS_SET   | FATTR4_WORD1_TIME_MODIFY_SET)
++
++/* These are the only attrs allowed in CREATE/OPEN/SETATTR. */
++#define NFSD_WRITEABLE_ATTRS_WORD0                                                          \
++(FATTR4_WORD0_SIZE              | FATTR4_WORD0_ACL                                         )
++#define NFSD_WRITEABLE_ATTRS_WORD1                                                          \
++(FATTR4_WORD1_MODE              | FATTR4_WORD1_OWNER         | FATTR4_WORD1_OWNER_GROUP     \
++ | FATTR4_WORD1_TIME_ACCESS_SET | FATTR4_WORD1_TIME_MODIFY_SET)
++#define NFSD_WRITEABLE_ATTRS_WORD2 0
++
++#define NFSD_SUPPATTR_EXCLCREAT_WORD0 \
++	NFSD_WRITEABLE_ATTRS_WORD0
++/*
++ * we currently store the exclusive create verifier in the v_{a,m}time
++ * attributes so the client can't set these at create time using EXCLUSIVE4_1
++ */
++#define NFSD_SUPPATTR_EXCLCREAT_WORD1 \
++	(NFSD_WRITEABLE_ATTRS_WORD1 & \
++	 ~(FATTR4_WORD1_TIME_ACCESS_SET | FATTR4_WORD1_TIME_MODIFY_SET))
++#define NFSD_SUPPATTR_EXCLCREAT_WORD2 \
++	NFSD_WRITEABLE_ATTRS_WORD2
++
++#endif /* CONFIG_NFSD_V4 */
++
++#endif /* LINUX_NFSD_NFSD_H */
+diff -ruN nfsd/nfsfh.c nfsd.new/nfsfh.c
+--- nfsd/nfsfh.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfsfh.c	2012-09-06 16:22:57.000000000 +0530
+@@ -21,7 +21,7 @@
+ #include <linux/sunrpc/clnt.h>
+ #include <linux/sunrpc/svc.h>
+ #include <linux/sunrpc/svcauth_gss.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include "auth.h"
+ 
+ #define NFSDDBG_FACILITY		NFSDDBG_FH
+@@ -109,6 +109,36 @@
+ 	return nfserrno(nfsd_setuser(rqstp, exp));
+ }
+ 
++static inline __be32 check_pseudo_root(struct svc_rqst *rqstp,
++	struct dentry *dentry, struct svc_export *exp)
++{
++	if (!(exp->ex_flags & NFSEXP_V4ROOT))
++		return nfs_ok;
++	/*
++	 * v2/v3 clients have no need for the V4ROOT export--they use
++	 * the mount protocl instead; also, further V4ROOT checks may be
++	 * in v4-specific code, in which case v2/v3 clients could bypass
++	 * them.
++	 */
++	if (!nfsd_v4client(rqstp))
++		return nfserr_stale;
++	/*
++	 * We're exposing only the directories and symlinks that have to be
++	 * traversed on the way to real exports:
++	 */
++	if (unlikely(!S_ISDIR(dentry->d_inode->i_mode) &&
++		     !S_ISLNK(dentry->d_inode->i_mode)))
++		return nfserr_stale;
++	/*
++	 * A pseudoroot export gives permission to access only one
++	 * single directory; the kernel has to make another upcall
++	 * before granting access to anything else under it:
++	 */
++	if (unlikely(dentry != exp->ex_path.dentry))
++		return nfserr_stale;
++	return nfs_ok;
++}
++
+ /*
+  * Use the given filehandle to look up the corresponding export and
+  * dentry.  On success, the results are used to set fh_export and
+@@ -312,6 +342,10 @@
+ 		 * is about to be used in another nfsv4 compound
+ 		 * operation.
+ 		 */
++		error = check_pseudo_root(rqstp, dentry, exp);
++		if (error)
++			goto out;
++
+ 		error = nfsd_setuser_and_check_port(rqstp, exp);
+ 		if (error)
+ 			goto out;
+diff -ruN nfsd/nfsproc.c nfsd.new/nfsproc.c
+--- nfsd/nfsproc.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfsproc.c	2012-09-06 16:22:57.000000000 +0530
+@@ -21,7 +21,7 @@
+ 
+ #include <linux/sunrpc/clnt.h>
+ #include <linux/sunrpc/svc.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/cache.h>
+ #include <linux/nfsd/xdr.h>
+ 
+diff -ruN nfsd/nfssvc.c nfsd.new/nfssvc.c
+--- nfsd/nfssvc.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfssvc.c	2012-09-06 16:22:57.000000000 +0530
+@@ -28,7 +28,7 @@
+ #include <linux/sunrpc/svc.h>
+ #include <linux/sunrpc/svcsock.h>
+ #include <linux/sunrpc/cache.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/stats.h>
+ #include <linux/nfsd/cache.h>
+ #include <linux/nfsd/syscall.h>
+diff -ruN nfsd/nfsxdr.c nfsd.new/nfsxdr.c
+--- nfsd/nfsxdr.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/nfsxdr.c	2012-09-06 16:22:57.000000000 +0530
+@@ -12,7 +12,7 @@
+ #include <linux/vfs.h>
+ #include <linux/sunrpc/xdr.h>
+ #include <linux/sunrpc/svc.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/xdr.h>
+ #include <linux/mm.h>
+ #include "auth.h"
+diff -ruN nfsd/stats.c nfsd.new/stats.c
+--- nfsd/stats.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/stats.c	2012-09-06 16:22:57.000000000 +0530
+@@ -32,7 +32,7 @@
+ 
+ #include <linux/sunrpc/svc.h>
+ #include <linux/sunrpc/stats.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #include <linux/nfsd/stats.h>
+ 
+ struct nfsd_stats	nfsdstats;
+diff -ruN nfsd/vfs.c nfsd.new/vfs.c
+--- nfsd/vfs.c	2012-03-26 15:38:20.000000000 +0530
++++ nfsd.new/vfs.c	2012-09-06 16:22:57.000000000 +0530
+@@ -37,7 +37,7 @@
+ #include <linux/vfs.h>
+ #include <linux/delay.h>
+ #include <linux/sunrpc/svc.h>
+-#include <linux/nfsd/nfsd.h>
++#include "nfsd.h"
+ #ifdef CONFIG_NFSD_V3
+ #include <linux/nfs3.h>
+ #include <linux/nfsd/xdr3.h>
+@@ -89,12 +89,6 @@
+ #define RAPARM_HASH_MASK	(RAPARM_HASH_SIZE-1)
+ static struct raparm_hbucket	raparm_hash[RAPARM_HASH_SIZE];
+ 
+-static inline int
+-nfsd_v4client(struct svc_rqst *rq)
+-{
+-    return rq->rq_prog == NFS_PROGRAM && rq->rq_vers == 4;
+-}
+-
+ /* 
+  * Called from nfsd_lookup and encode_dirent. Check if we have crossed 
+  * a mount point.
+@@ -116,8 +110,16 @@
+ 
+ 	exp2 = rqst_exp_get_by_name(rqstp, &path);
+ 	if (IS_ERR(exp2)) {
+-		if (PTR_ERR(exp2) != -ENOENT)
+-			err = PTR_ERR(exp2);
++		err = PTR_ERR(exp2);
++		/*
++		 * We normally allow NFS clients to continue
++		 * "underneath" a mountpoint that is not exported.
++		 * The exception is V4ROOT, where no traversal is ever
++		 * allowed without an explicit export of the new
++		 * directory.
++		 */
++		if (err == -ENOENT && !(exp->ex_flags & NFSEXP_V4ROOT))
++			err = 0;
+ 		path_put(&path);
+ 		goto out;
+ 	}
+@@ -141,6 +143,19 @@
+ 	return err;
+ }
+ 
++/*
++ * For nfsd purposes, we treat V4ROOT exports as though there was an
++ * export at *every* directory.
++ */
++int nfsd_mountpoint(struct dentry *dentry, struct svc_export *exp)
++{
++	if (d_mountpoint(dentry))
++		return 1;
++	if (!(exp->ex_flags & NFSEXP_V4ROOT))
++		return 0;
++	return dentry->d_inode != NULL;
++}
++
+ __be32
+ nfsd_lookup_dentry(struct svc_rqst *rqstp, struct svc_fh *fhp,
+ 		   const char *name, unsigned int len,
+@@ -208,7 +223,7 @@
+ 		/*
+ 		 * check if we have crossed a mount point ...
+ 		 */
+-		if (d_mountpoint(dentry)) {
++		if (nfsd_mountpoint(dentry, exp)) {
+ 			if ((host_err = nfsd_cross_mnt(rqstp, &dentry, &exp))) {
+ 				dput(dentry);
+ 				goto out_nfserr;
