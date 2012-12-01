@@ -1,3 +1,7 @@
+/*
+ * Program to fork a child process and both child and 
+ * parent writing to the same file 
+ */
 #include <stdio.h>
 #include <fcntl.h>
 #include <string.h>
