@@ -7,6 +7,10 @@
 #include <fcntl.h>
 #include <strings.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
+#include <linux/fs.h>
 
 /*
  * SHA-256 checksum, as specified in FIPS 180-3, available at:
@@ -33,6 +37,13 @@
 #define	SIGMA1(x)	(Rot32(x, 6) ^ Rot32(x, 11) ^ Rot32(x, 25))
 #define	sigma0(x)	(Rot32(x, 7) ^ Rot32(x, 18) ^ ((x) >> 3))
 #define	sigma1(x)	(Rot32(x, 17) ^ Rot32(x, 19) ^ ((x) >> 10))
+
+typedef struct {
+    char    nvh_encoding;   /* nvs encoding method */
+    char    nvh_endian;     /* nvs endian */
+    char    nvh_reserved1;  /* reserved for future use */
+    char    nvh_reserved2;  /* reserved for future use */
+} nvs_header_t;
 
 static const uint32_t SHA256_K[64] = {
 	0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
@@ -121,7 +132,178 @@ zio_checksum_SHA256(const void *buf, uint64_t size, int64_t cksum[]) //, zio_cks
 
 int Usage()
 {
-    printf("<prog> : <devname> <offset> <guid> <output-device>\n");
+    printf("<prog> : <devname> <offset> <guid> <newguid> <output-device>\n");
+}
+
+int hostlittleendian = 1;
+int disklittleendian = 1;
+void set_endianness(nvs_header_t nvs_header)
+{
+    disklittleendian = nvs_header.nvh_endian;
+    int i = 1;
+    char *i_ptr = (char *)&i;
+    char c = 1;
+    if (i_ptr[0] == c)
+        hostlittleendian = 1;
+    else
+        hostlittleendian = 0;
+}
+
+#define LABEL_SIZE 262144       // 256K
+#define NVPAIR_OFFSET 16384     // 16k
+#define NVPAIR_SIZE 114688      // 112k
+#define CKSUM_SIZE 32
+int read_label(std::string path, int64_t offset, char **buf)
+{
+    *buf = (char *)malloc(128*1024);
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        printf("Failed to open %s\n", path.c_str());
+        return 1;
+    }
+
+    bzero(*buf, NVPAIR_SIZE);
+    lseek(fd, offset, SEEK_SET);
+    int ret = read(fd, *buf, NVPAIR_SIZE-CKSUM_SIZE);
+    if (ret != NVPAIR_SIZE-CKSUM_SIZE) {
+        printf("%s: Failed to read %d bytes", __FUNCTION__, NVPAIR_SIZE-CKSUM_SIZE);
+        close(fd);
+        return 1;
+    }
+    close(fd);
+
+    return 0;
+}
+
+int write_label(std::string path, int64_t offset, char *buf, int64_t size)
+{
+    int fd = open(path.c_str(), O_WRONLY);
+    if (fd < 0) {
+        printf("Failed to open %s\n", path.c_str());
+        return 1;
+    }
+
+    lseek(fd, offset, SEEK_SET);
+    int ret = write(fd, buf, size);
+    if (ret != size) {
+        printf("%s: Failed to read %d bytes", __FUNCTION__, size);
+        close(fd);
+        return 1;
+    }
+    close(fd);
+
+    return 0;
+}
+
+void read_nvheader(char *buf, nvs_header_t &header)
+{
+    memcpy(&header, buf, sizeof(header));
+}
+
+#define BSWAP_8(x)      ((x) & 0xff)
+#define BSWAP_16(x)     ((BSWAP_8(x) << 8) | BSWAP_8((x) >> 8))
+#define BSWAP_32(x)     ((BSWAP_16(x) << 16) | BSWAP_16((x) >> 16))
+#define BSWAP_64(x)     ((BSWAP_32(x) << 32) | BSWAP_32((x) >> 32))
+
+int64_t swap64(int64_t input)
+{
+    int64_t output = input;
+#if 0
+    char * output_ptr = (char *)&output;
+    char c; 
+    for (int i = 0; i < 4; i++) {
+        char c = output_ptr[i];
+        output_ptr[i] = output_ptr[7-i];
+        output_ptr[7-i] = c;
+    }
+#else
+    output = BSWAP_64(input);
+#endif
+    return output;
+}
+
+int64_t _htonll(int64_t input)
+{
+    if (!hostlittleendian)
+        return input;
+
+    return swap64(input);
+}
+
+int64_t _ntohll(int64_t input)
+{
+    return _htonll(input);
+}
+
+void writeInt64DiskEndian(char *buf, int64_t input)
+{
+    int64_t inputendian;
+    if (disklittleendian != hostlittleendian) {
+        //printf("converting endian\n");
+        inputendian = swap64(input);
+    } else {
+        //printf("NOT converting endian\n");
+        inputendian = input;
+    }
+
+    memcpy(buf, &inputendian, sizeof(inputendian));
+
+    return;
+}
+
+int compute_label_checksum(char *buf, int64_t compute_offset, bool updateinline)
+{
+    char savebuf[NVPAIR_SIZE];
+    memcpy(savebuf, buf+NVPAIR_SIZE-CKSUM_SIZE, CKSUM_SIZE);
+
+    writeInt64DiskEndian(buf+114688-32, compute_offset);
+    bzero(buf+114688-32+8, 24); 
+
+    int64_t cksum[4];
+    zio_checksum_SHA256(buf, 114688, cksum);
+
+    if (!updateinline) {
+        printf("Restoring cksum\n");
+        memcpy(buf+NVPAIR_SIZE-CKSUM_SIZE, savebuf, CKSUM_SIZE);
+    } else {
+        printf("Updating checksum inline\n");
+        for (int i = 0; i < 4; i++) {
+            printf("cksum %d = %lx\n", i, cksum[i]);
+            writeInt64DiskEndian(buf+NVPAIR_SIZE-CKSUM_SIZE+(i*sizeof(int64_t)), cksum[i]);
+        }        
+    }
+
+    return 0;
+}
+
+int getDevGeometry(const std::string & devPath, int64_t &devsize)
+{
+    struct stat statbuf;
+    int err = stat(devPath.c_str(), &statbuf);
+
+    if (err || !S_ISBLK(statbuf.st_mode)) {
+        printf("Failed to stat block device to get device geometry of %s", devPath.c_str());
+        return -1;
+    }
+
+    int fd = open(devPath.c_str(), O_RDONLY|O_NONBLOCK);
+    if ( fd < 0 ) {
+        printf("Failed to open device for getting device geometry of %s", devPath.c_str());
+        return -1;
+    }
+
+    // First try to get the total size in byte, since it is simple
+    int64_t size = 0;
+    if (ioctl(fd, BLKGETSIZE64, &size) == 0) {
+        printf("size of %s is = %lu", devPath.c_str(), size);
+        devsize = size;
+        close(fd);
+        return 0;
+    }
+
+    close(fd);
+    printf("Failed to get size of %s", devPath.c_str());
+    return 0;
 }
 
 int main(int argc, char *argv[])
@@ -135,59 +317,93 @@ int main(int argc, char *argv[])
 
     uint64_t offset = strtoull(argv[2], NULL, 10);
     uint64_t guid = strtoull(argv[3], NULL, 10);
+    uint64_t guid_new = 0;
+    bool guid_change = false;
     std::string output_device;
-    if (argc > 4)
-	    output_device = argv[4];
+    if (argc > 4) {
+        guid_change = true;
+        guid_new = strtoull(argv[4], NULL, 10);
+        output_device = argv[5];
+    }
+
     printf("dev = %s offset = %lu guid = %lu output_device = %s\n", device.c_str(), offset, guid, output_device.c_str());
 
-
-    char *buf = (char *)malloc(128*1024);
-    int fd = open(device.c_str(), O_RDONLY);
-    if (fd < 0) {
-        printf("Failed to open %s\n", device.c_str());
+    int64_t size;
+    if (getDevGeometry(device, size)) {
+        printf("Failed to get size of %s\n", device.c_str());
         return 1;
     }
-    bzero(buf, 128*1024);
-    lseek(fd, offset, SEEK_SET);
-    int ret = read(fd, buf, 114688-32);
-    if (ret != 114688-32) {
-        printf("Failed to read %d bytes", 114688-32);
-        return 1;
-    }
-    close(fd);
 
-    int64_t guid_n = guid;
-    int64_t guid_new = guid_n + 1;
-    char * guid_ptr = (char *)&guid_n;
-    char c; 
+    char *buf;
+    int err = read_label(device, offset, &buf);
+    if (err) {
+        printf("%s: Failed to read label, err - %d", __FUNCTION__, err);
+        return err;
+    }
+    printf("read label is done\n");
+
+    nvs_header_t nvs_header;
+    read_nvheader(buf, nvs_header);
+    set_endianness(nvs_header);
+
     for (int i = 0; i < 4; i++) {
-        char c = guid_ptr[i];
-        guid_ptr[i] = guid_ptr[7-i];
-        guid_ptr[7-i] = c;
-    }
-    printf("dev = %s guid = %lu\n", device.c_str(), guid);
-    for (int i = 0; i < 114688-32; i++) {
-        if (strncmp(buf+i, "pool_guid", 9) == 0) {
-            printf("Found at offset %d\n", i);
-            /* search for another 16 bytes for this guid */
-            for (int j = 0; j < 16; j++) {
-		if (memcmp(buf+i+9+j, &guid_n, sizeof(guid_n)) == 0) {
-                    printf("new found guid at %d\n", j);
-                    memcpy(buf+i+9+j, &guid_new, sizeof(guid_new));
-                }
-		if (memcmp(buf+i+9+j, &guid, sizeof(guid)) == 0) {
-                    printf("new found guid at %d\n", j);
-                    memcpy(buf+i+9+j, &guid_new, sizeof(guid_new));
+
+        int64_t label_offset;
+        int64_t nvpair_offset;
+        if (i == 0)
+            label_offset = 0;
+        if (i == 1)
+            label_offset = 0 + LABEL_SIZE;
+        if (i == 2)
+            label_offset = size - (2*LABEL_SIZE);
+        if (i == 3)
+            label_offset = size - LABEL_SIZE;
+        nvpair_offset = label_offset+NVPAIR_OFFSET;
+
+        //printf("label_offset = %d nvpair_offset = %d\n", label_offset, label_offset+NVPAIR_OFFSET);
+
+        int err = read_label(device, nvpair_offset, &buf);
+        if (err) {
+            printf("%s: Failed to read label, err - %d", __FUNCTION__, err);
+            return err;
+        }
+        //printf("read label is done\n");
+
+#if 1
+        compute_label_checksum(buf, nvpair_offset, false);
+
+        int64_t guid_n = _htonll(guid);
+        int64_t guid_new_n = _htonll(guid_new);
+        printf("dev = %s guid = %lu guid_n = %lu\n", device.c_str(), guid, guid_n);
+        for (int i = 0; i < NVPAIR_SIZE-CKSUM_SIZE; i++) {
+            if (strncmp(buf+i, "pool_guid", 9) == 0) {
+                printf("Found at offset %d\n", i);
+                /* search for another 16 bytes for this guid */
+                for (int j = 0; j < 16; j++) {
+                    if (memcmp(buf+i+9+j, &guid_n, sizeof(guid_n)) == 0) {
+                        printf("new found guid at %d\n", j);
+                        if (guid_change) {
+                            memcpy(buf+i+9+j, &guid_new_n, sizeof(guid_new_n));
+                        }
+                    }
+                    if (memcmp(buf+i+9+j, &guid, sizeof(guid)) == 0) {
+                        printf("old found guid at %d\n", j);
+                        exit(1);
+                    }
                 }
             }
         }
+        if (guid_change) {
+            compute_label_checksum(buf, nvpair_offset, true);
+            printf("Writing new checksum to %s at offset %lu\n", output_device.c_str(), nvpair_offset);
+            write_label(output_device, nvpair_offset, buf, NVPAIR_SIZE);
+        }
+#endif        
     }
-		 
-    memcpy(buf+114688-32, &offset, sizeof(offset));
-    bzero(buf+114688-32+8, 24); 
+    return 0;
 
-    int64_t cksum[4];
-    zio_checksum_SHA256(buf, 114688, cksum);
+    compute_label_checksum(buf, offset, true);
+
 
     char *outfile = "import.out";
 #if 0
@@ -198,9 +414,10 @@ int main(int argc, char *argv[])
     }
     write(fd, buf, 114688);
     close(fd);
-#endif
     memcpy(buf+114688-32, &cksum, sizeof(cksum));
+#endif
 
+    int fd;
     if (output_device.empty()) {
 	    outfile = "import.out.new";
 	    fd = open(outfile, O_CREAT|O_TRUNC|O_WRONLY, 0644);
@@ -219,6 +436,7 @@ int main(int argc, char *argv[])
 
     write(fd, buf, 114688);
     close(fd);
+
 
     return 0;
 }
