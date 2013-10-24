@@ -45,6 +45,15 @@ typedef struct {
     char    nvh_reserved2;  /* reserved for future use */
 } nvs_header_t;
 
+struct uberblock {
+    uint64_t        ub_magic;       /* UBERBLOCK_MAGIC              */
+    uint64_t        ub_version;     /* SPA_VERSION                  */
+    uint64_t        ub_txg;         /* txg of last sync             */
+    uint64_t        ub_guid_sum;    /* sum of all vdev guids        */
+    uint64_t        ub_timestamp;   /* UTC time of last sync        */
+    //blkptr_t        ub_rootbp;      /* MOS objset_phys_t            */
+};
+
 static const uint32_t SHA256_K[64] = {
 	0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
 	0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -132,7 +141,7 @@ zio_checksum_SHA256(const void *buf, uint64_t size, int64_t cksum[]) //, zio_cks
 
 int Usage()
 {
-    printf("<prog> : <devname> <offset> <guid> <newguid> <output-device>\n");
+    printf("<prog> : <devname> <guid> <newguid> <output-device>\n");
 }
 
 int hostlittleendian = 1;
@@ -152,7 +161,13 @@ void set_endianness(nvs_header_t nvs_header)
 #define LABEL_SIZE 262144       // 256K
 #define NVPAIR_OFFSET 16384     // 16k
 #define NVPAIR_SIZE 114688      // 112k
+#define UBERSTART_OFFSET 131072 // 128K
 #define CKSUM_SIZE 32
+
+#define UBERBLOCK_MAGIC         0x00bab10c              /* oo-ba-bloc!  */
+
+int uberblock_size = 1024;      // 1K, this should be calculated as 'ashift' from nvlist
+
 int read_label(std::string path, int64_t offset, char **buf)
 {
     *buf = (char *)malloc(128*1024);
@@ -167,6 +182,27 @@ int read_label(std::string path, int64_t offset, char **buf)
     int ret = read(fd, *buf, NVPAIR_SIZE-CKSUM_SIZE);
     if (ret != NVPAIR_SIZE-CKSUM_SIZE) {
         printf("%s: Failed to read %d bytes", __FUNCTION__, NVPAIR_SIZE-CKSUM_SIZE);
+        close(fd);
+        return 1;
+    }
+    close(fd);
+
+    return 0;
+}
+
+int read_uberblock(std::string path, int64_t offset, char *buf)
+{
+    int fd = open(path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        printf("Failed to open %s\n", path.c_str());
+        return 1;
+    }
+
+    bzero(buf, uberblock_size);
+    lseek(fd, offset, SEEK_SET);
+    int ret = read(fd, buf, uberblock_size);
+    if (ret != uberblock_size) {
+        printf("%s: Failed to read %d bytes", __FUNCTION__, uberblock_size);
         close(fd);
         return 1;
     }
@@ -251,25 +287,25 @@ void writeInt64DiskEndian(char *buf, int64_t input)
     return;
 }
 
-int compute_label_checksum(char *buf, int64_t compute_offset, bool updateinline)
+int compute_label_checksum(char *buf, int64_t compute_offset, int64_t datasize, bool updateinline)
 {
-    char savebuf[NVPAIR_SIZE];
-    memcpy(savebuf, buf+NVPAIR_SIZE-CKSUM_SIZE, CKSUM_SIZE);
+    char savebuf[CKSUM_SIZE];
+    memcpy(savebuf, buf+datasize-CKSUM_SIZE, CKSUM_SIZE);
 
-    writeInt64DiskEndian(buf+114688-32, compute_offset);
-    bzero(buf+114688-32+8, 24); 
+    writeInt64DiskEndian(buf+datasize-32, compute_offset);
+    bzero(buf+datasize-32+8, 24); 
 
     int64_t cksum[4];
-    zio_checksum_SHA256(buf, 114688, cksum);
+    zio_checksum_SHA256(buf, datasize, cksum);
 
     if (!updateinline) {
-        printf("Restoring cksum\n");
-        memcpy(buf+NVPAIR_SIZE-CKSUM_SIZE, savebuf, CKSUM_SIZE);
+        //printf("Restoring cksum\n");
+        memcpy(buf+datasize-CKSUM_SIZE, savebuf, CKSUM_SIZE);
     } else {
         printf("Updating checksum inline\n");
         for (int i = 0; i < 4; i++) {
             printf("cksum %d = %lx\n", i, cksum[i]);
-            writeInt64DiskEndian(buf+NVPAIR_SIZE-CKSUM_SIZE+(i*sizeof(int64_t)), cksum[i]);
+            writeInt64DiskEndian(buf+datasize-CKSUM_SIZE+(i*sizeof(int64_t)), cksum[i]);
         }        
     }
 
@@ -308,25 +344,24 @@ int getDevGeometry(const std::string & devPath, int64_t &devsize)
 
 int main(int argc, char *argv[])
 {
-    if (argc < 4) {
+    if (argc < 3) {
         Usage();
         return 1;
     }
 
     std::string device = argv[1];
 
-    uint64_t offset = strtoull(argv[2], NULL, 10);
-    uint64_t guid = strtoull(argv[3], NULL, 10);
+    uint64_t guid = strtoull(argv[2], NULL, 10);
     uint64_t guid_new = 0;
     bool guid_change = false;
     std::string output_device;
     if (argc > 4) {
         guid_change = true;
-        guid_new = strtoull(argv[4], NULL, 10);
-        output_device = argv[5];
+        guid_new = strtoull(argv[3], NULL, 10);
+        output_device = argv[4];
     }
 
-    printf("dev = %s offset = %lu guid = %lu output_device = %s\n", device.c_str(), offset, guid, output_device.c_str());
+    printf("dev = %s guid = %lu output_device = %s\n", device.c_str(), guid, output_device.c_str());
 
     int64_t size;
     if (getDevGeometry(device, size)) {
@@ -335,7 +370,7 @@ int main(int argc, char *argv[])
     }
 
     char *buf;
-    int err = read_label(device, offset, &buf);
+    int err = read_label(device, NVPAIR_OFFSET, &buf);
     if (err) {
         printf("%s: Failed to read label, err - %d", __FUNCTION__, err);
         return err;
@@ -369,8 +404,7 @@ int main(int argc, char *argv[])
         }
         //printf("read label is done\n");
 
-#if 1
-        compute_label_checksum(buf, nvpair_offset, false);
+        compute_label_checksum(buf, nvpair_offset, NVPAIR_SIZE, false);
 
         int64_t guid_n = _htonll(guid);
         int64_t guid_new_n = _htonll(guid_new);
@@ -394,15 +428,48 @@ int main(int argc, char *argv[])
             }
         }
         if (guid_change) {
-            compute_label_checksum(buf, nvpair_offset, true);
+            compute_label_checksum(buf, nvpair_offset, NVPAIR_SIZE, true);
             printf("Writing new checksum to %s at offset %lu\n", output_device.c_str(), nvpair_offset);
             write_label(output_device, nvpair_offset, buf, NVPAIR_SIZE);
         }
-#endif        
-    }
-    return 0;
 
-    compute_label_checksum(buf, offset, true);
+        int64_t offset = UBERSTART_OFFSET+label_offset;
+
+        char *buf2 = (char *)malloc(uberblock_size);
+        int64_t ubermagic = UBERBLOCK_MAGIC;
+        while(1) {
+            if (offset >= label_offset+LABEL_SIZE)
+                break;
+
+            int err = read_uberblock(device, offset, buf2);
+
+            struct uberblock *ub = (struct uberblock *)buf2;
+            if (ub->ub_magic  == UBERBLOCK_MAGIC) {
+    //        if (memcmp(&ubermagic, buf, sizeof(ubermagic)) == 0) {
+                printf("Found ubermagic at %lu %lx\n", offset, offset);
+                printf("guid_sum %lu\n", ub->ub_guid_sum);
+                if (guid_change) {
+                    printf("adding to guid %ld\n", guid_new - guid);
+                    ub->ub_guid_sum += (guid_new - guid);
+                    printf("guid_sum %lu\n", ub->ub_guid_sum);
+                }
+
+            } else {
+                offset += uberblock_size;
+                continue;
+            }
+            
+            compute_label_checksum(buf2, offset, uberblock_size, true);
+
+            if (guid_change /* also add check for uberchanged */) {
+                printf("Writing new uberblock at offset %lu %lx\n", offset, offset);
+                write_label(output_device, offset, buf2, uberblock_size);
+            }
+
+            offset += uberblock_size;
+
+        }
+    }
 
 
     char *outfile = "import.out";
@@ -415,7 +482,6 @@ int main(int argc, char *argv[])
     write(fd, buf, 114688);
     close(fd);
     memcpy(buf+114688-32, &cksum, sizeof(cksum));
-#endif
 
     int fd;
     if (output_device.empty()) {
@@ -436,6 +502,7 @@ int main(int argc, char *argv[])
 
     write(fd, buf, 114688);
     close(fd);
+#endif
 
 
     return 0;
