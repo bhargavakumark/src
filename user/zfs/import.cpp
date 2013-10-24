@@ -100,7 +100,7 @@ SHA256Transform(uint32_t *H, const uint8_t *cp)
 }
 
 void
-zio_checksum_SHA256(const void *buf, uint64_t size, int64_t cksum[]) //, zio_cksum_t *zcp)
+zio_checksum_SHA256(const void *buf, uint64_t size, uint64_t cksum[]) //, zio_cksum_t *zcp)
 {
 	uint32_t H[8] = { 0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
 	    0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19 };
@@ -168,7 +168,7 @@ void set_endianness(nvs_header_t nvs_header)
 
 int uberblock_size = 1024;      // 1K, this should be calculated as 'ashift' from nvlist
 
-int read_label(std::string path, int64_t offset, char **buf)
+int read_label(std::string path, uint64_t offset, char **buf)
 {
     *buf = (char *)malloc(128*1024);
     int fd = open(path.c_str(), O_RDONLY);
@@ -190,7 +190,7 @@ int read_label(std::string path, int64_t offset, char **buf)
     return 0;
 }
 
-int read_uberblock(std::string path, int64_t offset, char *buf)
+int read_uberblock(std::string path, uint64_t offset, char *buf)
 {
     int fd = open(path.c_str(), O_RDONLY);
     if (fd < 0) {
@@ -211,7 +211,7 @@ int read_uberblock(std::string path, int64_t offset, char *buf)
     return 0;
 }
 
-int write_label(std::string path, int64_t offset, char *buf, int64_t size)
+int write_label(std::string path, uint64_t offset, char *buf, uint64_t size)
 {
     int fd = open(path.c_str(), O_WRONLY);
     if (fd < 0) {
@@ -241,9 +241,9 @@ void read_nvheader(char *buf, nvs_header_t &header)
 #define BSWAP_32(x)     ((BSWAP_16(x) << 16) | BSWAP_16((x) >> 16))
 #define BSWAP_64(x)     ((BSWAP_32(x) << 32) | BSWAP_32((x) >> 32))
 
-int64_t swap64(int64_t input)
+uint64_t swap64(uint64_t input)
 {
-    int64_t output = input;
+    uint64_t output = input;
 #if 0
     char * output_ptr = (char *)&output;
     char c; 
@@ -258,7 +258,7 @@ int64_t swap64(int64_t input)
     return output;
 }
 
-int64_t _htonll(int64_t input)
+uint64_t _htonll(uint64_t input)
 {
     if (!hostlittleendian)
         return input;
@@ -266,14 +266,14 @@ int64_t _htonll(int64_t input)
     return swap64(input);
 }
 
-int64_t _ntohll(int64_t input)
+uint64_t _ntohll(uint64_t input)
 {
     return _htonll(input);
 }
 
-void writeInt64DiskEndian(char *buf, int64_t input)
+void writeInt64DiskEndian(char *buf, uint64_t input)
 {
-    int64_t inputendian;
+    uint64_t inputendian;
     if (disklittleendian != hostlittleendian) {
         //printf("converting endian\n");
         inputendian = swap64(input);
@@ -287,9 +287,9 @@ void writeInt64DiskEndian(char *buf, int64_t input)
     return;
 }
 
-int64_t toInt64HostEndian(int64_t input)
+uint64_t toInt64HostEndian(uint64_t input)
 {
-    int64_t inputendian;
+    uint64_t inputendian;
     if (disklittleendian != hostlittleendian) {
         //printf("converting endian\n");
         inputendian = swap64(input);
@@ -301,12 +301,12 @@ int64_t toInt64HostEndian(int64_t input)
     return inputendian;
 }
 
-int64_t toInt64DiskEndian(int64_t input)
+uint64_t toInt64DiskEndian(uint64_t input)
 {
     return toInt64HostEndian(input);
 }
 
-int compute_label_checksum(char *buf, int64_t compute_offset, int64_t datasize, bool updateinline)
+int compute_label_checksum(char *buf, uint64_t compute_offset, uint64_t datasize, bool updateinline)
 {
     char savebuf[CKSUM_SIZE];
     memcpy(savebuf, buf+datasize-CKSUM_SIZE, CKSUM_SIZE);
@@ -314,7 +314,7 @@ int compute_label_checksum(char *buf, int64_t compute_offset, int64_t datasize, 
     writeInt64DiskEndian(buf+datasize-32, compute_offset);
     bzero(buf+datasize-32+8, 24); 
 
-    int64_t cksum[4];
+    uint64_t cksum[4];
     zio_checksum_SHA256(buf, datasize, cksum);
 
     if (!updateinline) {
@@ -324,14 +324,14 @@ int compute_label_checksum(char *buf, int64_t compute_offset, int64_t datasize, 
         printf("Updating checksum inline\n");
         for (int i = 0; i < 4; i++) {
             printf("cksum %d = %lx\n", i, cksum[i]);
-            writeInt64DiskEndian(buf+datasize-CKSUM_SIZE+(i*sizeof(int64_t)), cksum[i]);
+            writeInt64DiskEndian(buf+datasize-CKSUM_SIZE+(i*sizeof(uint64_t)), cksum[i]);
         }        
     }
 
     return 0;
 }
 
-int getDevGeometry(const std::string & devPath, int64_t &devsize)
+int getDevGeometry(const std::string & devPath, uint64_t &devsize)
 {
     struct stat statbuf;
     int err = stat(devPath.c_str(), &statbuf);
@@ -353,7 +353,7 @@ int getDevGeometry(const std::string & devPath, int64_t &devsize)
     }
 
     // First try to get the total size in byte, since it is simple
-    int64_t size = 0;
+    uint64_t size = 0;
     if (ioctl(fd, BLKGETSIZE64, &size) == 0) {
         printf("size of %s is = %lu", devPath.c_str(), size);
         devsize = size;
@@ -387,7 +387,7 @@ int main(int argc, char *argv[])
 
     printf("dev = %s guid = %lu output_device = %s\n", device.c_str(), guid, output_device.c_str());
 
-    int64_t size;
+    uint64_t size;
     if (getDevGeometry(device, size)) {
         printf("Failed to get size of %s\n", device.c_str());
         return 1;
@@ -406,8 +406,8 @@ int main(int argc, char *argv[])
 
     for (int i = 0; i < 4; i++) {
 
-        int64_t label_offset;
-        int64_t nvpair_offset;
+        uint64_t label_offset;
+        uint64_t nvpair_offset;
         if (i == 0)
             label_offset = 0;
         if (i == 1)
@@ -429,8 +429,8 @@ int main(int argc, char *argv[])
 
         compute_label_checksum(buf, nvpair_offset, NVPAIR_SIZE, false);
 
-        int64_t guid_n = _htonll(guid);
-        int64_t guid_new_n = _htonll(guid_new);
+        uint64_t guid_n = _htonll(guid);
+        uint64_t guid_new_n = _htonll(guid_new);
         printf("dev = %s guid = %lu guid_n = %lu\n", device.c_str(), guid, guid_n);
         for (int i = 0; i < NVPAIR_SIZE-CKSUM_SIZE; i++) {
             if (strncmp(buf+i, "pool_guid", 9) == 0) {
@@ -456,10 +456,10 @@ int main(int argc, char *argv[])
             write_label(output_device, nvpair_offset, buf, NVPAIR_SIZE);
         }
 
-        int64_t offset = UBERSTART_OFFSET+label_offset;
+        uint64_t offset = UBERSTART_OFFSET+label_offset;
 
         char *buf2 = (char *)malloc(uberblock_size);
-        int64_t ubermagic = toInt64DiskEndian((int64_t)UBERBLOCK_MAGIC);
+        uint64_t ubermagic = toInt64DiskEndian((uint64_t)UBERBLOCK_MAGIC);
         char *x = (char *)&ubermagic;
         printf("ubermagic %x %x %x %x %x %x %x %x\n", x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]);
         while(1) {
@@ -475,7 +475,7 @@ int main(int argc, char *argv[])
                 printf("guid_sum %lu\n", ub->ub_guid_sum);
                 if (guid_change) {
                     printf("adding to guid %ld\n", guid_new - guid);
-                    int64_t guid_host_endian = toInt64HostEndian(ub->ub_guid_sum);
+                    uint64_t guid_host_endian = toInt64HostEndian(ub->ub_guid_sum);
                     printf("before guid_host_endian = %lu\n", guid_host_endian);
                     guid_host_endian += (guid_new - guid);
                     printf("after guid_host_endian = %lu\n", guid_host_endian);
