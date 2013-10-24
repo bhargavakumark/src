@@ -287,6 +287,25 @@ void writeInt64DiskEndian(char *buf, int64_t input)
     return;
 }
 
+int64_t toInt64HostEndian(int64_t input)
+{
+    int64_t inputendian;
+    if (disklittleendian != hostlittleendian) {
+        //printf("converting endian\n");
+        inputendian = swap64(input);
+    } else {
+        //printf("NOT converting endian\n");
+        inputendian = input;
+    }
+
+    return inputendian;
+}
+
+int64_t toInt64DiskEndian(int64_t input)
+{
+    return toInt64HostEndian(input);
+}
+
 int compute_label_checksum(char *buf, int64_t compute_offset, int64_t datasize, bool updateinline)
 {
     char savebuf[CKSUM_SIZE];
@@ -318,8 +337,13 @@ int getDevGeometry(const std::string & devPath, int64_t &devsize)
     int err = stat(devPath.c_str(), &statbuf);
 
     if (err || !S_ISBLK(statbuf.st_mode)) {
-        printf("Failed to stat block device to get device geometry of %s", devPath.c_str());
+        printf("Failed to stat block device to get device geometry of %s\n", devPath.c_str());
+#if 0
         return -1;
+#else
+        devsize = 104857600;
+        return 0;
+#endif
     }
 
     int fd = open(devPath.c_str(), O_RDONLY|O_NONBLOCK);
@@ -375,7 +399,6 @@ int main(int argc, char *argv[])
         printf("%s: Failed to read label, err - %d", __FUNCTION__, err);
         return err;
     }
-    printf("read label is done\n");
 
     nvs_header_t nvs_header;
     read_nvheader(buf, nvs_header);
@@ -395,7 +418,7 @@ int main(int argc, char *argv[])
             label_offset = size - LABEL_SIZE;
         nvpair_offset = label_offset+NVPAIR_OFFSET;
 
-        //printf("label_offset = %d nvpair_offset = %d\n", label_offset, label_offset+NVPAIR_OFFSET);
+        printf("label_offset = %d nvpair_offset = %d\n", label_offset, label_offset+NVPAIR_OFFSET);
 
         int err = read_label(device, nvpair_offset, &buf);
         if (err) {
@@ -436,7 +459,9 @@ int main(int argc, char *argv[])
         int64_t offset = UBERSTART_OFFSET+label_offset;
 
         char *buf2 = (char *)malloc(uberblock_size);
-        int64_t ubermagic = UBERBLOCK_MAGIC;
+        int64_t ubermagic = toInt64DiskEndian((int64_t)UBERBLOCK_MAGIC);
+        char *x = (char *)&ubermagic;
+        printf("ubermagic %x %x %x %x %x %x %x %x\n", x[0], x[1], x[2], x[3], x[4], x[5], x[6], x[7]);
         while(1) {
             if (offset >= label_offset+LABEL_SIZE)
                 break;
@@ -444,14 +469,19 @@ int main(int argc, char *argv[])
             int err = read_uberblock(device, offset, buf2);
 
             struct uberblock *ub = (struct uberblock *)buf2;
-            if (ub->ub_magic  == UBERBLOCK_MAGIC) {
+            if (ub->ub_magic  == ubermagic) {
     //        if (memcmp(&ubermagic, buf, sizeof(ubermagic)) == 0) {
                 printf("Found ubermagic at %lu %lx\n", offset, offset);
                 printf("guid_sum %lu\n", ub->ub_guid_sum);
                 if (guid_change) {
                     printf("adding to guid %ld\n", guid_new - guid);
-                    ub->ub_guid_sum += (guid_new - guid);
-                    printf("guid_sum %lu\n", ub->ub_guid_sum);
+                    int64_t guid_host_endian = toInt64HostEndian(ub->ub_guid_sum);
+                    printf("before guid_host_endian = %lu\n", guid_host_endian);
+                    guid_host_endian += (guid_new - guid);
+                    printf("after guid_host_endian = %lu\n", guid_host_endian);
+                    //writeInt64DiskEndian((char *)(&(ub->ub_guid_sum)), guid_host_endian);
+                    ub->ub_guid_sum = toInt64DiskEndian(guid_host_endian);
+                    printf("guid_sum %lu\n", toInt64HostEndian(ub->ub_guid_sum));
                 }
 
             } else {
