@@ -477,7 +477,8 @@ int main(int argc, char *argv[])
                     printf("adding to guid %ld\n", guid_new - guid);
                     uint64_t guid_host_endian = toInt64HostEndian(ub->ub_guid_sum);
                     printf("before guid_host_endian = %lu\n", guid_host_endian);
-                    guid_host_endian += (guid_new - guid);
+                    guid_host_endian += guid_new;
+                    guid_host_endian -= guid;
                     printf("after guid_host_endian = %lu\n", guid_host_endian);
                     //writeInt64DiskEndian((char *)(&(ub->ub_guid_sum)), guid_host_endian);
                     ub->ub_guid_sum = toInt64DiskEndian(guid_host_endian);
